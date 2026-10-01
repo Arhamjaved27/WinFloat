@@ -18,18 +18,30 @@ log = logging.getLogger(__name__)
 MAX_LABEL = 60
 
 
-def make_icon() -> QIcon:
-    pix = QPixmap(64, 64)
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def render_icon(size: int) -> QPixmap:
+    """The app icon drawn natively at `size` px (designed on a 64-unit grid), so it stays sharp at any size."""
+    pix = QPixmap(size, size)
     pix.fill(Qt.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(size / 64, size / 64)
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#2b3140"))
     p.drawRoundedRect(QRectF(4, 8, 56, 48), 8, 8)
     p.setBrush(QColor("#4c9aff"))
     p.drawRoundedRect(QRectF(26, 28, 26, 20), 4, 4)
     p.end()
-    return QIcon(pix)
+    return pix
+
+
+def make_icon() -> QIcon:
+    icon = QIcon()
+    for size in ICON_SIZES:
+        icon.addPixmap(render_icon(size))
+    return icon
 
 
 def _short(text: str) -> str:
@@ -42,7 +54,7 @@ class Tray:
         self._settings_path = settings_path
         self._on_open = on_open
         self._icon = QSystemTrayIcon(make_icon())
-        self._icon.setToolTip("OnTop")
+        self._icon.setToolTip("WinFloat")
         self._menu = QMenu()
         self._menu.aboutToShow.connect(self._rebuild)
         self._icon.setContextMenu(self._menu)
@@ -55,7 +67,7 @@ class Tray:
         return QSystemTrayIcon.isSystemTrayAvailable()
 
     def notify(self, message: str) -> None:
-        self._icon.showMessage("OnTop", message, QSystemTrayIcon.Information, 5000)
+        self._icon.showMessage("WinFloat", message, QSystemTrayIcon.Information, 5000)
 
     def _on_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -66,7 +78,7 @@ class Tray:
         menu.clear()
         windows = windows_list.list_windows()
 
-        menu.addAction("Open OnTop").triggered.connect(lambda _=False: self._on_open())
+        menu.addAction("Open WinFloat").triggered.connect(lambda _=False: self._on_open())
         menu.addSeparator()
         pip_menu = menu.addMenu("PiP a window")
         pin_menu = menu.addMenu("Pin on top / unpin a window")

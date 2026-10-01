@@ -1,4 +1,4 @@
-"""The main OnTop window: pick windows, manage active PiPs/pins, and edit settings."""
+"""The main WinFloat window: pick windows, manage active PiPs/pins, and edit settings."""
 from __future__ import annotations
 
 import logging
@@ -247,7 +247,7 @@ class MainWindow(QWidget):
         self._icon_cache: dict[str, QIcon] = {}
         self._all_windows: list[windows_list.WindowInfo] = []
         self._active_items: list = []
-        self.setWindowTitle("OnTop")
+        self.setWindowTitle("WinFloat")
         self.setWindowIcon(make_icon())
         self.resize(900, 620)
         self.setMinimumSize(780, 520)
@@ -282,7 +282,7 @@ class MainWindow(QWidget):
         logo.setPixmap(make_icon().pixmap(34, 34))
         title = QVBoxLayout()
         title.setSpacing(0)
-        title.addWidget(_label("OnTop", "brand"))
+        title.addWidget(_label("WinFloat", "brand"))
         title.addWidget(_label("PiP · Pin · Opacity", "tagline"))
         brand.addWidget(logo)
         brand.addLayout(title, 1)
@@ -290,10 +290,10 @@ class MainWindow(QWidget):
         layout.addSpacing(22)
         self._nav_layout = layout
         layout.addStretch(1)
-        quit_btn = QPushButton("Quit OnTop")
+        quit_btn = QPushButton("Quit WinFloat")
         quit_btn.setObjectName("ghost")
         quit_btn.clicked.connect(QApplication.quit)
-        tray_hint = _label("Closing this window keeps OnTop running in the tray.", "muted")
+        tray_hint = _label("Closing this window keeps WinFloat running in the tray.", "muted")
         tray_hint.setWordWrap(True)
         layout.addWidget(tray_hint)
         layout.addWidget(quit_btn)
@@ -422,7 +422,7 @@ class MainWindow(QWidget):
     # -- Active page --------------------------------------------------------
 
     def _build_active_page(self) -> QWidget:
-        page, layout = self._page("Active", "PiP windows and pinned windows OnTop is managing right now.")
+        page, layout = self._page("Active", "PiP windows and pinned windows WinFloat is managing right now.")
         self._active_list = self._make_list()
         self._active_list.currentItemChanged.connect(lambda *_: self._sync_active_controls())
         list_card, list_layout = _card()
@@ -568,7 +568,7 @@ class MainWindow(QWidget):
         step_row = QHBoxLayout()
         step_row.addWidget(_label("Opacity change per key press"), 1)
         step_row.addWidget(self._step)
-        self._autostart = QCheckBox("Start OnTop with Windows (minimised to the tray)")
+        self._autostart = QCheckBox("Start WinFloat with Windows (minimised to the tray)")
         self._autostart.clicked.connect(self._on_autostart)
         self._hover = QCheckBox("Show an arrow when the cursor reaches the top-centre of a window")
         general_layout.addLayout(step_row)
@@ -688,4 +688,4 @@ class MainWindow(QWidget):
         self.hide()
         if not self._told_about_tray:
             self._told_about_tray = True
-            self._notify("OnTop is still running in the system tray. Quit it from the tray menu or the window's Quit button.")
+            self._notify("WinFloat is still running in the system tray. Quit it from the tray menu or the window's Quit button.")

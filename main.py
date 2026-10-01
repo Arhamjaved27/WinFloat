@@ -1,4 +1,4 @@
-"""OnTop: picture-in-picture, always-on-top and opacity for any Windows window."""
+"""WinFloat: picture-in-picture, always-on-top and opacity for any Windows window."""
 import atexit
 import faulthandler
 import logging
@@ -24,7 +24,7 @@ _crash_log = None  # kept open for faulthandler
 
 def setup_logging() -> None:
     handler = logging.handlers.RotatingFileHandler(
-        data_dir() / "ontop.log", maxBytes=512_000, backupCount=2, encoding="utf-8"
+        data_dir() / "winfloat.log", maxBytes=512_000, backupCount=2, encoding="utf-8"
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
@@ -41,7 +41,7 @@ def setup_logging() -> None:
 
 def warm_up_text_rendering() -> None:
     """Qt's first styled-text render takes seconds on some machines; pay it at launch, not on the first PiP."""
-    probe = QLabel("OnTop")
+    probe = QLabel("WinFloat")
     probe.setStyleSheet("QLabel { color: white; }")
     probe.grab()
 
@@ -50,13 +50,13 @@ def main() -> int:
     setup_logging()
     log = logging.getLogger("ontop")
 
-    mutex = winapi.acquire_single_instance("Local\\OnTop.SingleInstance")
+    mutex = winapi.acquire_single_instance("Local\\WinFloat.SingleInstance")
     if mutex is None:
-        log.info("Another OnTop instance is already running; exiting")
+        log.info("Another WinFloat instance is already running; exiting")
         app = QApplication(sys.argv)
         QMessageBox.information(
-            None, "OnTop",
-            "OnTop is already running. Look for its icon in the system tray (click the ^ arrow if hidden) "
+            None, "WinFloat",
+            "WinFloat is already running. Look for its icon in the system tray (click the ^ arrow if hidden) "
             "and click it to open the window.",
         )
         return 0
@@ -92,15 +92,15 @@ def main() -> int:
     wake.timeout.connect(lambda: None)  # lets Python handle the signal while Qt runs
     wake.start(500)
 
-    log.info("OnTop started")
+    log.info("WinFloat started")
     if not tray.available:
-        log.error("No system tray available; OnTop will run without a tray icon")
+        log.error("No system tray available; WinFloat will run without a tray icon")
     if "--tray" in sys.argv:
-        tray.notify("OnTop is running in the tray. Click its icon to open the window.")
+        tray.notify("WinFloat is running in the tray. Click its icon to open the window.")
     else:
         window.show_window()
     code = app.exec_()
-    log.info("OnTop exited with code %s", code)
+    log.info("WinFloat exited with code %s", code)
     return code
 
 

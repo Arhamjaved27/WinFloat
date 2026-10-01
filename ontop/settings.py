@@ -1,4 +1,4 @@
-"""Persistent settings: hotkeys plus per-app profiles, stored as JSON in %APPDATA%\\OnTop."""
+"""Persistent settings: hotkeys plus per-app profiles, stored as JSON in %APPDATA%\\WinFloat."""
 from __future__ import annotations
 
 import copy
@@ -9,7 +9,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-APP_NAME = "OnTop"
+APP_NAME = "WinFloat"
 
 DEFAULT_HOTKEYS = {
     "pip_foreground": "ctrl+alt+p",
@@ -25,6 +25,12 @@ DEFAULTS = {"version": 1, "opacity_step": 10, "hover_arrow": True, "hotkeys": DE
 def data_dir() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     path = Path(base) / APP_NAME
+    legacy = Path(base) / "OnTop"  # data folder from before the app was renamed
+    if not path.exists() and legacy.is_dir():
+        try:
+            legacy.rename(path)
+        except OSError as exc:
+            log.error("Could not move %s to %s: %s", legacy, path, exc)
     path.mkdir(parents=True, exist_ok=True)
     return path
 

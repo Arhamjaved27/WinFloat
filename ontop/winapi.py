@@ -1,4 +1,4 @@
-"""Thin ctypes wrappers for the Win32 and DWM calls OnTop needs.
+"""Thin ctypes wrappers for the Win32 and DWM calls WinFloat needs.
 
 Functions that can fail raise OSError carrying the Win32 error text so callers
 decide how to report it.
