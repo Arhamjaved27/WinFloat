@@ -19,7 +19,7 @@ DEFAULT_HOTKEYS = {
     "toggle_click_through": "ctrl+alt+c",
     "reset_all": "ctrl+alt+x",
 }
-DEFAULTS = {"version": 1, "opacity_step": 10, "hotkeys": DEFAULT_HOTKEYS, "profiles": {}}
+DEFAULTS = {"version": 1, "opacity_step": 10, "hover_arrow": True, "hotkeys": DEFAULT_HOTKEYS, "profiles": {}}
 
 
 def data_dir() -> Path:
@@ -77,6 +77,14 @@ class Settings:
             return step
         log.warning("Ignoring invalid opacity_step %r; using %d", step, DEFAULTS["opacity_step"])
         return DEFAULTS["opacity_step"]
+
+    @property
+    def hover_arrow(self) -> bool:
+        value = self.data["hover_arrow"]
+        if isinstance(value, bool):
+            return value
+        log.warning("Ignoring invalid hover_arrow %r; using %s", value, DEFAULTS["hover_arrow"])
+        return DEFAULTS["hover_arrow"]
 
     def profile(self, exe: str) -> dict:
         return self.data["profiles"].get(exe.lower(), {})

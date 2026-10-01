@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (
 from . import autostart, winapi, windows_list
 from .controller import Controller, Target
 from .hotkeys import HotkeyManager, parse_hotkey
-from .settings import DEFAULT_HOTKEYS, Settings
+from .settings import DEFAULT_HOTKEYS, DEFAULTS, Settings
+from .smooth_scroll import SmoothScroller
 from .tray import make_icon
 
 log = logging.getLogger(__name__)
@@ -168,6 +169,13 @@ class HotkeyEdit(QPushButton):
         self.changed.emit()
 
 
+class NoWheelSpinBox(QSpinBox):
+    """Scrolling the page over this box must scroll the page, not silently change the value."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 class RowDelegate(QStyledItemDelegate):
     """Paints list rows as rounded cards: app icon, bold title, muted subtitle."""
 
@@ -225,6 +233,8 @@ def _label(text: str, name: str = "") -> QLabel:
 
 
 class MainWindow(QWidget):
+    hover_arrow_changed = pyqtSignal(bool)
+
     def __init__(self, controller: Controller, settings: Settings, hotkeys: HotkeyManager, notify):
         super().__init__()
         self.setObjectName("root")
@@ -333,6 +343,7 @@ class MainWindow(QWidget):
         view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         view.setSpacing(2)
         view.setIconSize(QSize(30, 30))
+        SmoothScroller(view)
         return view
 
     # -- Windows page -------------------------------------------------------
@@ -525,6 +536,7 @@ class MainWindow(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        SmoothScroller(scroll)
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 8, 0)
@@ -549,7 +561,7 @@ class MainWindow(QWidget):
 
         general_card, general_layout = _card()
         general_layout.addWidget(_label("General", "cardTitle"))
-        self._step = QSpinBox()
+        self._step = NoWheelSpinBox()
         self._step.setRange(1, 50)
         self._step.setSuffix(" %")
         self._step.setFixedWidth(110)
@@ -558,7 +570,9 @@ class MainWindow(QWidget):
         step_row.addWidget(self._step)
         self._autostart = QCheckBox("Start OnTop with Windows (minimised to the tray)")
         self._autostart.clicked.connect(self._on_autostart)
+        self._hover = QCheckBox("Show an arrow when the cursor reaches the top-centre of a window")
         general_layout.addLayout(step_row)
+        general_layout.addWidget(self._hover)
         general_layout.addWidget(self._autostart)
 
         inner_layout.addWidget(keys_card)
@@ -571,9 +585,9 @@ class MainWindow(QWidget):
         apply_btn = QPushButton("Save && apply")
         apply_btn.setObjectName("primary")
         apply_btn.clicked.connect(self._apply_settings)
-        reset_btn = QPushButton("Reset shortcuts to defaults")
-        reset_btn.setObjectName("ghost")
-        reset_btn.clicked.connect(self._reset_hotkeys)
+        reset_btn = QPushButton("Reset to defaults")
+        reset_btn.setToolTip("Restore the default shortcuts, opacity step and hover arrow, and apply them now")
+        reset_btn.clicked.connect(self._reset_settings)
         buttons = QHBoxLayout()
         buttons.addWidget(reset_btn)
         buttons.addStretch(1)
@@ -599,11 +613,16 @@ class MainWindow(QWidget):
     def _load_settings_into_form(self) -> None:
         self._show_hotkeys(self._settings.hotkeys)
         self._step.setValue(self._settings.opacity_step)
+        self._hover.setChecked(self._settings.hover_arrow)
         self._autostart.setChecked(autostart.is_enabled())
 
-    def _reset_hotkeys(self) -> None:
+    def _reset_settings(self) -> None:
         self._show_hotkeys(DEFAULT_HOTKEYS)
-        self._set_status("Defaults loaded. Press 'Save & apply' to use them.")
+        self._step.setValue(DEFAULTS["opacity_step"])
+        self._hover.setChecked(DEFAULTS["hover_arrow"])
+        self._apply_settings()
+        if self._status.text().startswith("Saved."):  # not the "Saved, but a hotkey is taken" warning
+            self._set_status("Defaults restored and applied.")
 
     def _set_status(self, text: str, error: bool = False) -> None:
         self._status.setStyleSheet(f"color: {'#ff7b72' if error else MUTED};")
@@ -625,12 +644,14 @@ class MainWindow(QWidget):
 
         self._settings.data["hotkeys"] = bindings
         self._settings.data["opacity_step"] = self._step.value()
+        self._settings.data["hover_arrow"] = self._hover.isChecked()
         try:
             self._settings.save()
         except OSError as exc:
             log.error("Could not save settings: %s", exc)
             self._set_status(f"Could not save settings: {exc}", error=True)
             return
+        self.hover_arrow_changed.emit(self._hover.isChecked())
         self._hotkeys.unregister_all()
         failures = self._hotkeys.register_all(bindings)
         if failures:
@@ -647,6 +668,10 @@ class MainWindow(QWidget):
             self._set_status(f"Could not change start-with-Windows: {exc}", error=True)
 
     # -- lifecycle ----------------------------------------------------------
+
+    def show_settings(self) -> None:
+        self._go(2)
+        self.show_window()
 
     def show_window(self) -> None:
         self._load_settings_into_form()

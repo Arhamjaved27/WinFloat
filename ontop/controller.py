@@ -73,6 +73,9 @@ class Controller(QObject):
         self._pips[source] = pip
         pip.show()
 
+    def is_pip_open(self, source: int) -> bool:
+        return source in self._pips
+
     def close_pip(self, source: int) -> None:
         pip = self._pips.get(source)
         if pip:

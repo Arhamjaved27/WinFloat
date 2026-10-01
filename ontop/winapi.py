@@ -79,6 +79,8 @@ _GetLayeredWindowAttributes = _sig(
 _GetForegroundWindow = _sig(user32.GetForegroundWindow, wintypes.HWND)
 _GetCursorPos = _sig(user32.GetCursorPos, wintypes.BOOL, ctypes.POINTER(wintypes.POINT))
 _WindowFromPoint = _sig(user32.WindowFromPoint, wintypes.HWND, wintypes.POINT)
+_GetWindowRect = _sig(user32.GetWindowRect, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+_GetAsyncKeyState = _sig(user32.GetAsyncKeyState, ctypes.c_short, ctypes.c_int)
 _GetClientRect = _sig(user32.GetClientRect, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 _EnumWindows = _sig(user32.EnumWindows, wintypes.BOOL, WNDENUMPROC, wintypes.LPARAM)
 _RegisterHotKey = _sig(user32.RegisterHotKey, wintypes.BOOL, wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT)
@@ -221,6 +223,31 @@ def client_size(hwnd: int) -> tuple[int, int]:
     if not _GetClientRect(hwnd, ctypes.byref(rect)):
         raise _fail("GetClientRect")
     return rect.right - rect.left, rect.bottom - rect.top
+
+
+def window_bounds(hwnd: int) -> tuple[int, int, int, int]:
+    """Visible (left, top, right, bottom) of a window in physical pixels, excluding the invisible resize border."""
+    rect = wintypes.RECT()
+    if _DwmGetWindowAttribute(hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:  # DWMWA_EXTENDED_FRAME_BOUNDS
+        if not _GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise _fail("GetWindowRect")
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def window_dpi(hwnd: int) -> int:
+    get_dpi = getattr(user32, "GetDpiForWindow", None)  # Windows 10 1607+
+    return (get_dpi(hwnd) or 96) if get_dpi else 96
+
+
+def set_window_rect(hwnd: int, x: int, y: int, width: int, height: int, topmost: bool = True) -> None:
+    """Move/size a window in physical pixels without activating it."""
+    after = HWND_TOPMOST if topmost else 0
+    if not _SetWindowPos(hwnd, after, x, y, width, height, SWP_NOACTIVATE):
+        raise _fail("SetWindowPos")
+
+
+def is_key_down(vk: int) -> bool:
+    return bool(_GetAsyncKeyState(vk) & 0x8000)
 
 
 def foreground_window() -> int:

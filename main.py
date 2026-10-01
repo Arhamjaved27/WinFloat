@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QMessageBox
 from ontop import winapi
 from ontop.controller import Controller
 from ontop.hotkeys import HotkeyManager
+from ontop.hover_launcher import HoverLauncher
 from ontop.main_window import MainWindow
 from ontop.pin_manager import PinManager
 from ontop.settings import Settings, data_dir
@@ -76,6 +77,9 @@ def main() -> int:
     hotkeys.triggered.connect(controller.handle_hotkey)
     tray = Tray(controller, str(settings.path), on_open=lambda: window.show_window())
     window = MainWindow(controller, settings, hotkeys, tray.notify)
+    launcher = HoverLauncher(controller, open_settings=window.show_settings)
+    launcher.set_enabled(settings.hover_arrow)
+    window.hover_arrow_changed.connect(launcher.set_enabled)
     failures = hotkeys.register_all(settings.hotkeys)
     if failures:
         tray.notify("Some hotkeys could not be registered:\n" + "\n".join(failures))
