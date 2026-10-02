@@ -25,6 +25,7 @@ HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 GW_OWNER = 4
 GA_ROOT = 2
@@ -343,6 +344,196 @@ def screen_to_client(hwnd: int, x: int, y: int) -> tuple[int, int]:
     if not user32.ScreenToClient(hwnd, ctypes.byref(pt)):
         raise _fail("ScreenToClient")
     return pt.x, pt.y
+
+
+def client_screen_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """(left, top, width, height) of a window's client area in screen pixels."""
+    pt = wintypes.POINT(0, 0)
+    if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+        raise _fail("ClientToScreen")
+    width, height = client_size(hwnd)
+    return pt.x, pt.y, width, height
+
+
+# --- parking a minimized window (keeps a PiP source live) --------------------
+#
+# Windows does not draw minimized windows, and apps such as VLC stop presenting video when their window is
+# off-screen. So a minimized source is restored *on-screen* but made fully transparent and click-through:
+# it keeps rendering for the mirror (a DWM thumbnail ignores the source's alpha) while the user sees nothing.
+
+SW_SHOWNORMAL, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE, SW_SHOWMINNOACTIVE = 1, 3, 4, 7
+WPF_RESTORETOMAXIMIZED = 0x2
+
+
+class _Placement(ctypes.Structure):
+    _fields_ = [
+        ("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+        ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT), ("rcNormalPosition", wintypes.RECT),
+    ]
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+
+class ParkedWindow:
+    """What park() changed, so unpark() can put it back."""
+
+    def __init__(self, placement: _Placement, ex_style: int, layered: tuple[int, int, int] | None):
+        self.placement = placement
+        self.ex_style = ex_style
+        self.layered = layered
+
+
+_GetWindowPlacement = _sig(user32.GetWindowPlacement, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(_Placement))
+_SetWindowPlacement = _sig(user32.SetWindowPlacement, wintypes.BOOL, wintypes.HWND, ctypes.POINTER(_Placement))
+_MonitorFromRect = _sig(user32.MonitorFromRect, wintypes.HANDLE, ctypes.POINTER(wintypes.RECT), wintypes.DWORD)
+_GetMonitorInfoW = _sig(user32.GetMonitorInfoW, wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(_MonitorInfo))
+
+
+def _placement(hwnd: int) -> _Placement:
+    placement = _Placement()
+    placement.length = ctypes.sizeof(_Placement)
+    if not _GetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise _fail("GetWindowPlacement")
+    return placement
+
+
+def _apply_placement(hwnd: int, placement: _Placement) -> None:
+    if not _SetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise _fail("SetWindowPlacement")
+
+
+def _maximized_size(hwnd: int, near: wintypes.RECT) -> tuple[int, int]:
+    """Window size (including its invisible resize border) a maximized window has on `near`'s monitor."""
+    monitor = _MonitorFromRect(ctypes.byref(near), 2)  # MONITOR_DEFAULTTONEAREST
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(_MonitorInfo)
+    if not monitor or not _GetMonitorInfoW(monitor, ctypes.byref(info)):
+        raise _fail("GetMonitorInfo")
+    outer, frame = wintypes.RECT(), wintypes.RECT()
+    if not _GetWindowRect(hwnd, ctypes.byref(outer)):
+        raise _fail("GetWindowRect")
+    if _DwmGetWindowAttribute(hwnd, 9, ctypes.byref(frame), ctypes.sizeof(frame)) != 0:  # EXTENDED_FRAME_BOUNDS
+        frame = outer
+    border_w = (outer.right - outer.left) - (frame.right - frame.left)
+    border_h = (outer.bottom - outer.top) - (frame.bottom - frame.top)
+    work = info.rcWork
+    return work.right - work.left + border_w, work.bottom - work.top + border_h
+
+
+def park(hwnd: int) -> ParkedWindow:
+    """Restores a minimized window invisibly (fully transparent, click-through) without activating it."""
+    original = _placement(hwnd)
+    ex_style = get_ex_style(hwnd)
+    layered = get_layered_attrs(hwnd)
+    if ex_style & WS_EX_LAYERED and layered is None:
+        raise OSError("the window draws its own transparency, so it cannot be hidden")
+    parked = ParkedWindow(original, ex_style, layered)
+    try:
+        # hide it first so it never flashes on screen while restoring
+        set_layered(hwnd, 0)
+        update_ex_style(hwnd, add=WS_EX_TRANSPARENT)
+        restored = _Placement.from_buffer_copy(original)
+        restored.showCmd = SW_SHOWNOACTIVATE
+        _apply_placement(hwnd, restored)
+        if original.flags & WPF_RESTORETOMAXIMIZED:
+            # it restores to its (smaller) normal size; give it the maximized size back so the mirror keeps
+            # the same layout and aspect ratio
+            width, height = _maximized_size(hwnd, original.rcNormalPosition)
+            if not _SetWindowPos(hwnd, 0, 0, 0, width, height, SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER):
+                raise _fail("SetWindowPos")
+    except OSError:
+        unpark(hwnd, parked, minimized=True)
+        raise
+    return parked
+
+
+def unpark(hwnd: int, parked: ParkedWindow, minimized: bool) -> None:
+    """Undo park(): back to the minimized state (`minimized`) or to its normal/maximized position."""
+    restored = _Placement.from_buffer_copy(parked.placement)
+    if minimized:
+        restored.showCmd = SW_SHOWMINNOACTIVE
+    else:
+        restored.showCmd = SW_SHOWMAXIMIZED if parked.placement.flags & WPF_RESTORETOMAXIMIZED else SW_SHOWNORMAL
+    _apply_placement(hwnd, restored)
+    if parked.layered:
+        key, alpha, flags = parked.layered
+        set_layered(hwnd, alpha, key, flags)
+    update_ex_style(hwnd, remove=(WS_EX_TRANSPARENT | WS_EX_LAYERED) & ~parked.ex_style)
+
+
+# --- posting input to another window ---------------------------------------
+
+WM_KEYDOWN, WM_KEYUP = 0x0100, 0x0101
+WM_MOUSEMOVE, WM_MOUSEWHEEL = 0x0200, 0x020A
+BUTTON_MESSAGES = {  # Qt button name -> (down, up, double-click, MK_ flag)
+    "left": (0x0201, 0x0202, 0x0203, 0x0001),
+    "right": (0x0204, 0x0205, 0x0206, 0x0002),
+    "middle": (0x0207, 0x0208, 0x0209, 0x0010),
+}
+EXTENDED_KEYS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x6F, 0xA3, 0xA5}
+CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT = 0x1, 0x4
+
+_PostMessageW = _sig(user32.PostMessageW, wintypes.BOOL, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+_ChildWindowFromPointEx = _sig(
+    user32.ChildWindowFromPointEx, wintypes.HWND, wintypes.HWND, wintypes.POINT, wintypes.UINT
+)
+_MapVirtualKeyW = _sig(user32.MapVirtualKeyW, wintypes.UINT, wintypes.UINT, wintypes.UINT)
+
+
+class _GuiThreadInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT),
+    ]
+
+
+_GetGUIThreadInfo = _sig(user32.GetGUIThreadInfo, wintypes.BOOL, wintypes.DWORD, ctypes.POINTER(_GuiThreadInfo))
+
+
+def post_message(hwnd: int, msg: int, wparam: int, lparam: int) -> None:
+    """Raises OSError when Windows refuses (e.g. the target runs elevated, or it has no message queue)."""
+    if not _PostMessageW(hwnd, msg, wparam, lparam):
+        raise _fail("PostMessage")
+
+
+def make_lparam(x: int, y: int) -> int:
+    return ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+
+
+def child_window_at(root: int, x: int, y: int) -> tuple[int, int, int]:
+    """Deepest child of `root` at screen point (x, y): (hwnd, client x, client y) in that child."""
+    hwnd = root
+    for _ in range(16):  # nesting depth guard
+        cx, cy = screen_to_client(hwnd, x, y)
+        child = _ChildWindowFromPointEx(hwnd, wintypes.POINT(cx, cy), CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT)
+        if not child or int(child) == hwnd:
+            break
+        hwnd = int(child)
+    cx, cy = screen_to_client(hwnd, x, y)
+    return hwnd, cx, cy
+
+
+def focus_window_of(hwnd: int) -> int:
+    """The control that has keyboard focus inside hwnd's thread, or 0 (Windows only reports one while the window is active)."""
+    info = _GuiThreadInfo()
+    info.cbSize = ctypes.sizeof(_GuiThreadInfo)
+    thread = _GetWindowThreadProcessId(hwnd, None)
+    if thread and _GetGUIThreadInfo(thread, ctypes.byref(info)) and info.hwndFocus:
+        return int(info.hwndFocus)
+    return 0
+
+
+def key_lparam(vk: int, down: bool, repeat: bool) -> int:
+    scan = _MapVirtualKeyW(vk, 0)  # MAPVK_VK_TO_VSC
+    lparam = 1 | (scan << 16) | ((1 << 24) if vk in EXTENDED_KEYS else 0)
+    if not down:
+        lparam |= (1 << 30) | (1 << 31)
+    elif repeat:
+        lparam |= 1 << 30
+    return lparam
 
 
 # --- DWM thumbnails --------------------------------------------------------

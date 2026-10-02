@@ -32,8 +32,8 @@ If a hotkey is already taken by another program, WinFloat shows a tray notificat
 
 ## Limitations
 
-- PiP is view-only; clicks and keys are not forwarded to the source window.
-- A minimized source shows "Source window is minimized" instead of video.
+- **Controlling the source from a PiP:** clicks, double-clicks, drags and the mouse wheel on the video, and plain keys while the PiP has focus (arrows, space, letters), are posted to the source window. Combos with Ctrl/Alt/Shift/Win are not forwarded, and apps that read raw input (games, some players in fullscreen) may ignore it. Windows of elevated programs refuse forwarded input.
+- **Minimizing a mirrored window:** Windows does not draw minimized windows, and apps such as VLC stop playing when their window is off-screen. So WinFloat restores the source in place but fully transparent and click-through (it stays in the taskbar), and the PiP keeps playing. Click its taskbar button to bring it back where it was; closing the PiP leaves it minimized. If WinFloat is force-killed while a window is hidden this way, that window stays invisible: close it from its taskbar button's right-click menu. Elevated windows and windows with per-pixel transparency can't be hidden this way and show "Source window is minimized".
 - DRM-protected video may show black in a PiP.
 - Windows of elevated (administrator) programs can't be pinned or faded unless WinFloat is also run as administrator.
 - Windows that draw their own transparency can't be faded.

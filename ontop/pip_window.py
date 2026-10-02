@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from ctypes import wintypes
 
 from PyQt5.QtCore import QRect, Qt, QTimer, pyqtSignal
@@ -14,6 +15,7 @@ from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QSlider, QToolButton, QWidget
 
 from . import winapi
+from .input_forward import InputForwarder
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +24,10 @@ MIN_W = 180
 DEFAULT_W = 360
 EDGE = 6
 POLL_MS = 500
+PARK_GRACE_S = 1.0  # ignore 'source is foreground' right after parking it
+FORWARDED_BUTTONS = {Qt.LeftButton: "left", Qt.RightButton: "right", Qt.MiddleButton: "middle"}
+MODIFIER_MASK = Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier
+MODIFIER_VKS = {0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 
 LEFT, RIGHT, TOP, BOTTOM = 1, 2, 4, 8
 
@@ -93,9 +99,19 @@ class PipWindow(QWidget):
         self._opacity = 100
         self._drag: tuple[int, object, QRect] | None = None
         self._poll_warned = False
+        self._parked = None            # state of a minimized source that is being kept live invisibly
+        self._parked_at = 0.0
+        self._park_failed = False
+        self._was_front = False
+        self._dest = (0, 0, 1, 1)      # thumbnail rectangle in the PiP's physical pixels
+        self._forwarding = False       # a mouse button is held and being forwarded to the source
+        self._input = InputForwarder(source_hwnd)
+        self.setFocusPolicy(Qt.ClickFocus)
         self._build_strip(title)
 
         self._thumb = winapi.register_thumbnail(self._hwnd, source_hwnd)
+        if self._minimized:
+            self._park_source()
         self._source_size = self._query_size() or (16, 9)
         self.set_opacity(100)  # makes the window layered so click-through works later
         self.resize(DEFAULT_W, self._height_for(DEFAULT_W))
@@ -158,6 +174,7 @@ class PipWindow(QWidget):
         self._slider = QSlider(Qt.Horizontal)
         self._slider.setRange(winapi.MIN_OPACITY, 100)
         self._slider.setToolTip("Opacity")
+        self._slider.setFocusPolicy(Qt.NoFocus)  # arrow keys belong to the mirrored window
         self._slider.valueChanged.connect(self.set_opacity)
         self._ghost_btn = self._button("◌", "Click-through: clicks on the video pass to the window underneath", checkable=True)
         self._ghost_btn.clicked.connect(self.set_click_through)
@@ -207,14 +224,57 @@ class PipWindow(QWidget):
             return
         width, height = winapi.client_size(self._hwnd)
         top = round(STRIP_H * self.devicePixelRatioF())
-        winapi.update_thumbnail(
-            self._thumb, (1, top, width - 1, height - 1), visible=not self._minimized
-        )
+        self._dest = (1, top, width - 1, height - 1)
+        winapi.update_thumbnail(self._thumb, self._dest, visible=not self._minimized)
+
+    # -- minimized sources --------------------------------------------------
+
+    def _park_source(self) -> None:
+        """A minimized window is not drawn, so restore it invisibly (transparent, click-through) to keep the mirror live."""
+        try:
+            self._parked = winapi.park(self.source_hwnd)
+        except OSError as exc:  # e.g. an elevated window: fall back to the 'minimized' placeholder
+            self._park_failed = True
+            log.warning("Could not keep %#x live while minimized: %s", self.source_hwnd, exc)
+            return
+        self._parked_at = time.monotonic()
+        self._was_front = winapi.foreground_window() == self.source_hwnd
+        self._minimized = False
+        self._update_thumbnail()
+        self.update()
+
+    def _unpark_source(self, minimized: bool) -> None:
+        parked, self._parked = self._parked, None
+        if parked is None or not winapi.is_window(self.source_hwnd):
+            return
+        try:
+            winapi.unpark(self.source_hwnd, parked, minimized)
+        except OSError as exc:
+            log.warning("Could not restore %#x from its hidden state: %s", self.source_hwnd, exc)
+
+    def _watch_parked(self) -> None:
+        if winapi.is_iconic(self.source_hwnd):  # minimized again (e.g. taskbar click): re-park with a fresh placement
+            self._unpark_source(minimized=True)
+            self._park_source()
+            return
+        in_front = winapi.foreground_window() == self.source_hwnd
+        # Only a change *to* foreground means the user opened it. Windows may also activate it by itself after parking.
+        if in_front and not self._was_front and time.monotonic() - self._parked_at > PARK_GRACE_S:
+            self._unpark_source(minimized=False)
+        self._was_front = in_front
 
     def _poll(self) -> None:
         if not winapi.is_window(self.source_hwnd):
             self.close()
             return
+        self._input.remember_focus()
+        if self._parked is not None:
+            self._watch_parked()
+        elif winapi.is_iconic(self.source_hwnd):
+            if not self._park_failed:
+                self._park_source()
+        else:
+            self._park_failed = False
         minimized = winapi.is_iconic(self.source_hwnd)
         if minimized != self._minimized:
             self._minimized = minimized
@@ -264,6 +324,7 @@ class PipWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
+        self._unpark_source(minimized=True)  # leave the window minimized, as the user left it
         # DWM drops the thumbnail itself when the source window is destroyed, so only unregister live ones.
         if self._thumb is not None and winapi.is_window(self.source_hwnd):
             try:
@@ -296,11 +357,52 @@ class PipWindow(QWidget):
             edges |= BOTTOM
         return edges
 
+    def _source_point(self, pos, clamp: bool = False) -> tuple[int, int] | None:
+        """Screen position on the source window that the PiP point `pos` shows (None if off the video)."""
+        left, top, right, bottom = self._dest
+        dpr = self.devicePixelRatioF()
+        u = (pos.x() * dpr - left) / max(1, right - left)
+        v = (pos.y() * dpr - top) / max(1, bottom - top)
+        if clamp:
+            u, v = min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
+        elif not (0 <= u <= 1 and 0 <= v <= 1):
+            return None
+        try:
+            c_left, c_top, c_width, c_height = winapi.client_screen_rect(self.source_hwnd)
+        except OSError:
+            return None
+        width, height = self._source_size
+        # DWM's client area ends at the real client area's bottom-right and may start above it (menu bars)
+        return round(c_left + c_width - width + u * width), round(c_top + c_height - height + v * height)
+
+    def _on_video(self, pos) -> bool:
+        return not self._edges_at(pos) and pos.y() >= STRIP_H
+
+    def _forward_press(self, event, double: bool) -> None:
+        button = FORWARDED_BUTTONS.get(event.button())
+        point = None if self._minimized else self._source_point(event.pos())
+        if button and point:
+            self._input.mouse_press(button, *point, double=double)
+            self._forwarding = True
+
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
+        if self._on_video(event.pos()):
+            self._forward_press(event, double=False)
+        elif event.button() == Qt.LeftButton:
             self._drag = (self._edges_at(event.pos()), event.globalPos(), self.geometry())
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self._on_video(event.pos()):
+            self._forward_press(event, double=True)
+        else:
+            self.mousePressEvent(event)
+
     def mouseMoveEvent(self, event) -> None:
+        if self._forwarding:
+            point = self._source_point(event.pos(), clamp=True)
+            if point:
+                self._input.mouse_move(*point)
+            return
         if self._drag is None:
             shape = _cursor_for(self._edges_at(event.pos()))
             if shape is None:
@@ -319,5 +421,32 @@ class PipWindow(QWidget):
         )
         self.setGeometry(x, y, w, h)
 
-    def mouseReleaseEvent(self, _event) -> None:
+    def mouseReleaseEvent(self, event) -> None:
+        if self._forwarding and not event.buttons():
+            self._forwarding = False
+            point = self._source_point(event.pos(), clamp=True)
+            if point:
+                self._input.mouse_release(*point)
         self._drag = None
+
+    def wheelEvent(self, event) -> None:
+        point = None if self._minimized or not self._on_video(event.pos()) else self._source_point(event.pos())
+        if point:
+            self._input.wheel(event.angleDelta().y(), *point)
+            event.accept()
+        else:
+            event.ignore()
+
+    def keyPressEvent(self, event) -> None:
+        self._forward_key(event, down=True)
+
+    def keyReleaseEvent(self, event) -> None:
+        self._forward_key(event, down=False)
+
+    def _forward_key(self, event, down: bool) -> None:
+        vk = event.nativeVirtualKey()
+        if self._minimized or not vk or vk in MODIFIER_VKS or event.modifiers() & MODIFIER_MASK:
+            event.ignore()  # modifier combos cannot be reproduced by posted messages
+            return
+        self._input.key(vk, down, event.isAutoRepeat())
+        event.accept()
